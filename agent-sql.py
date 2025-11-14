@@ -1,6 +1,7 @@
 import os
 import re
 import sqlite3
+import uuid
 from typing import Literal
 import streamlit as st
 import requests
@@ -11,12 +12,19 @@ from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
 
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-def clean_text(text: str):
+def clean_text(text):
     """Clean text removing thinking tags"""
+    # Si el texto es una lista o no es string, convertirlo
+    if isinstance(text, list):
+        text = " ".join(str(item) for item in text)
+    elif not isinstance(text, str):
+        text = str(text)
+    
     cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return cleaned_text.strip()
 
@@ -167,8 +175,8 @@ def should_continue(state: MessagesState) -> Literal[END, "check_query"]:
         return "check_query"
 
 
-def build_agent(llm, db):
-    """Build the LangGraph agent"""
+def build_agent(llm, db, memory):
+    """Build the LangGraph agent with memory"""
     tools, get_schema_tool, run_query_tool, get_schema_node, run_query_node = setup_tools(db, llm)
     
     builder = StateGraph(MessagesState)
@@ -193,13 +201,14 @@ def build_agent(llm, db):
     builder.add_edge("check_query", "run_query")
     builder.add_edge("run_query", "generate_query")
 
-    return builder.compile()
+    return builder.compile(checkpointer=memory)
 
 
-def stream_response(agent, question):
-    """Stream the agent's response"""
+def stream_response(agent, question, thread_id):
+    """Stream the agent's response with memory"""
     for step in agent.stream(
         {"messages": [{"role": "user", "content": question}]},
+        config={"configurable": {"thread_id": thread_id}},
         stream_mode="values",
     ):
         yield step["messages"][-1]
@@ -210,7 +219,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Agente SQL con LangGraph y Ollama")
+st.title("Agente SQL con LangGraph y Gemini")
 st.markdown("### Haz preguntas sobre la base de datos Chinook en lenguaje natural")
 
 # Sidebar for configuration
@@ -219,7 +228,7 @@ with st.sidebar:
     
     # Model selection
     model_name = st.selectbox(
-        "Selecciona el modelo Ollama:",
+        "Selecciona el modelo Gemini:",
         ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"],
         index=0
     )
@@ -231,6 +240,31 @@ with st.sidebar:
             del st.session_state["db"]
         if "agent" in st.session_state:
             del st.session_state["agent"]
+    
+    # Memory management
+    st.subheader("Memoria del Chat")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️New chat"):
+            # Genera un nuevo thread_id para empezar una conversación nueva
+            st.session_state["thread_id"] = str(uuid.uuid4())
+            st.session_state["messages"] = [
+                {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?\n• ¿Cuál es el empleado que ha generado más ingresos en ventas?\n• ¿Qué álbum tiene más canciones?\n• ¿Cuáles son las 5 canciones más caras?"}
+            ]
+            st.rerun()
+    with col2:
+        if st.button("🔄Reboot Memory"):
+            # Limpia toda la memoria
+            st.session_state["memory"] = MemorySaver()
+            st.session_state["thread_id"] = str(uuid.uuid4())
+            if "agent" in st.session_state:
+                del st.session_state["agent"]
+            st.session_state["messages"] = [
+                {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?\n• ¿Cuál es el empleado que ha generado más ingresos en ventas?\n• ¿Qué álbum tiene más canciones?\n• ¿Cuáles son las 5 canciones más caras?"}
+            ]
+            st.rerun()
+    
+    st.info(f"**Thread ID:** {st.session_state.get('thread_id', 'N/A')[:8]}...")
 
 # Initialize database and model
 if "db" not in st.session_state:
@@ -248,11 +282,20 @@ if "db" not in st.session_state:
         st.error("Error al conectar con la base de datos")
         st.stop()
 
+# Initialize memory
+if "memory" not in st.session_state:
+    memory = MemorySaver()
+    st.session_state["memory"] = memory
+
+# Initialize thread_id único por sesión
+if "thread_id" not in st.session_state:
+    st.session_state["thread_id"] = str(uuid.uuid4())
+
 # Initialize model and agent
 if "agent" not in st.session_state:
     try:
         llm = ChatGoogleGenerativeAI(model=model_name)
-        st.session_state["agent"] = build_agent(llm, st.session_state["db"])
+        st.session_state["agent"] = build_agent(llm, st.session_state["db"], st.session_state["memory"])
         st.success(f"Agente SQL inicializado con modelo {model_name}")
     except Exception as e:
         st.error(f"Error al inicializar el modelo: {str(e)}")
@@ -261,7 +304,7 @@ if "agent" not in st.session_state:
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
-        {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?"}
+        {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?\n• ¿Cuál es el empleado que ha generado más ingresos en ventas?\n• ¿Qué álbum tiene más canciones?\n• ¿Cuáles son las 5 canciones más caras?"}
     ]
 
 # Display chat history
@@ -283,13 +326,20 @@ if question := st.chat_input("Haz una pregunta sobre la base de datos..."):
         
         try:
             with st.spinner("Analizando pregunta y generando consulta SQL..."):
-                # Stream the agent's response
-                for message in stream_response(st.session_state["agent"], question):
+                # Stream the agent's response with thread_id
+                for message in stream_response(st.session_state["agent"], question, st.session_state["thread_id"]):
+                    # Solo mostrar mensajes AI que no sean tool calls
                     if hasattr(message, 'content') and message.content:
+                        # Ignorar mensajes con tool_calls (llamadas a herramientas)
+                        if hasattr(message, 'tool_calls') and message.tool_calls:
+                            continue
+                        
                         content = clean_text(message.content)
-                        if content and content not in full_response:
-                            full_response = content
-                            message_placeholder.write(full_response)
+                        # Ignorar mensajes que solo contienen información de tablas disponibles
+                        if content and not content.startswith("Available tables:") and not content.startswith("Tablas disponibles:"):
+                            if content not in full_response:
+                                full_response = content
+                                message_placeholder.write(full_response)
             
             if not full_response:
                 full_response = "No pude generar una respuesta. Por favor, intenta reformular tu pregunta."

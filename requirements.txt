@@ -4,5 +4,4 @@ langchain-community
 langchain_google_genai
 langchain-core
 requests
-sqlite3
 python-dotenv
