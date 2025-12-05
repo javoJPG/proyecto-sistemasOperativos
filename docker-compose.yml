@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  aplicacion-streamlit:
+    build: .              # Construye la imagen a partir del Dockerfile en esta carpeta
+    container_name: aplicacion-streamlit
+    restart: unless-stopped
+    ports:
+      - "8501:8501"       # host:contenedor
+    environment:
+      GOOGLE_API_KEY: "AIzaSyCV8yM2_d3qCgEEiueVWKTdGJbidtJPsck"
+    # Si quieres pasar otras variables del .env:
+    # env_file:
+    #   - .env

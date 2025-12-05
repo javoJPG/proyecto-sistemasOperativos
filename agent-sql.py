@@ -36,36 +36,142 @@ def clean_text(text):
     return cleaned_text.strip()
 
 
-def download_chinook_db():
-    """Download the Chinook database if it doesn't exist"""
-    db_path = "Chinook.db"
+def create_pokemon_db():
+    """Create Pokemon database if it doesn't exist"""
+    db_path = "Pokemon.db"
     
     if not os.path.exists(db_path):
-        with st.spinner("Descargando base de datos Chinook..."):
-            url = "https://storage.googleapis.com/benchmarks-artifacts/chinook/Chinook.db"
+        with st.spinner("Creando base de datos Pokémon..."):
             try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    with open(db_path, "wb") as file:
-                        file.write(response.content)
-                    st.success("Base de datos descargada exitosamente")
-                    return True
-                else:
-                    st.error(f"Error al descargar la base de datos. Código: {response.status_code}")
-                    return False
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                # Crear tablas
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS pokemon (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        height INTEGER,
+                        weight INTEGER,
+                        base_experience INTEGER
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS types (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS pokemon_types (
+                        pokemon_id INTEGER,
+                        type_id INTEGER,
+                        slot INTEGER,
+                        FOREIGN KEY (pokemon_id) REFERENCES pokemon(id),
+                        FOREIGN KEY (type_id) REFERENCES types(id),
+                        PRIMARY KEY (pokemon_id, slot)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS stats (
+                        pokemon_id INTEGER,
+                        stat_name TEXT,
+                        base_stat INTEGER,
+                        FOREIGN KEY (pokemon_id) REFERENCES pokemon(id),
+                        PRIMARY KEY (pokemon_id, stat_name)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS abilities (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS pokemon_abilities (
+                        pokemon_id INTEGER,
+                        ability_id INTEGER,
+                        is_hidden BOOLEAN,
+                        slot INTEGER,
+                        FOREIGN KEY (pokemon_id) REFERENCES pokemon(id),
+                        FOREIGN KEY (ability_id) REFERENCES abilities(id),
+                        PRIMARY KEY (pokemon_id, ability_id, slot)
+                    )
+                """)
+                
+                # Descargar datos de los primeros 151 Pokémon (Gen 1)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for i in range(1, 152):
+                    status_text.text(f"Descargando Pokémon {i}/151...")
+                    progress_bar.progress(i / 151)
+                    
+                    response = requests.get(f"https://pokeapi.co/api/v2/pokemon/{i}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        # Insertar Pokémon
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO pokemon (id, name, height, weight, base_experience)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (data['id'], data['name'], data['height'], data['weight'], data['base_experience']))
+                        
+                        # Insertar tipos
+                        for type_data in data['types']:
+                            type_name = type_data['type']['name']
+                            cursor.execute("INSERT OR IGNORE INTO types (name) VALUES (?)", (type_name,))
+                            cursor.execute("SELECT id FROM types WHERE name = ?", (type_name,))
+                            type_id = cursor.fetchone()[0]
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO pokemon_types (pokemon_id, type_id, slot)
+                                VALUES (?, ?, ?)
+                            """, (data['id'], type_id, type_data['slot']))
+                        
+                        # Insertar estadísticas
+                        for stat_data in data['stats']:
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO stats (pokemon_id, stat_name, base_stat)
+                                VALUES (?, ?, ?)
+                            """, (data['id'], stat_data['stat']['name'], stat_data['base_stat']))
+                        
+                        # Insertar habilidades
+                        for ability_data in data['abilities']:
+                            ability_name = ability_data['ability']['name']
+                            cursor.execute("INSERT OR IGNORE INTO abilities (name) VALUES (?)", (ability_name,))
+                            cursor.execute("SELECT id FROM abilities WHERE name = ?", (ability_name,))
+                            ability_id = cursor.fetchone()[0]
+                            cursor.execute("""
+                                INSERT OR IGNORE INTO pokemon_abilities (pokemon_id, ability_id, is_hidden, slot)
+                                VALUES (?, ?, ?, ?)
+                            """, (data['id'], ability_id, ability_data['is_hidden'], ability_data['slot']))
+                
+                conn.commit()
+                conn.close()
+                
+                progress_bar.progress(1.0)
+                status_text.text("¡Base de datos creada exitosamente!")
+                st.success("Base de datos Pokémon creada exitosamente")
+                return True
+                
             except Exception as e:
-                st.error(f"Error al descargar la base de datos: {str(e)}")
+                st.error(f"Error al crear la base de datos: {str(e)}")
                 return False
     return True
 
 
 def setup_database():
     """Setup database connection and tools"""
-    if not download_chinook_db():
+    if not create_pokemon_db():
         return None, None
     
     try:
-        db = SQLDatabase.from_uri("sqlite:///Chinook.db")
+        db = SQLDatabase.from_uri("sqlite:///Pokemon.db")
         return db, True
     except Exception as e:
         st.error(f"Error conectando a la base de datos: {str(e)}")
@@ -227,7 +333,7 @@ st.set_page_config(
 )
 
 st.title("Agente SQL con LangGraph y Gemini")
-st.markdown("### Haz preguntas sobre la base de datos Chinook en lenguaje natural")
+st.markdown("### Haz preguntas sobre la base de datos Pokémon en lenguaje natural")
 
 # Sidebar for configuration
 with st.sidebar:
@@ -256,7 +362,7 @@ with st.sidebar:
             # Genera un nuevo thread_id para empezar una conversación nueva
             st.session_state["thread_id"] = str(uuid.uuid4())
             st.session_state["messages"] = [
-                {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?\n• ¿Cuál es el empleado que ha generado más ingresos en ventas?\n• ¿Qué álbum tiene más canciones?\n• ¿Cuáles son las 5 canciones más caras?"}
+                {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Pokémon como:\n\n• ¿Cuáles son los 5 Pokémon más pesados?\n• ¿Qué tipo de Pokémon es el más común?\n• ¿Cuál es el Pokémon con mayor experiencia base?\n• ¿Cuáles son los Pokémon de tipo fuego?\n• ¿Qué Pokémon tiene las estadísticas de ataque más altas?\n• ¿Cuántos Pokémon tienen habilidades ocultas?"}
             ]
             st.rerun()
     with col2:
@@ -267,7 +373,7 @@ with st.sidebar:
             if "agent" in st.session_state:
                 del st.session_state["agent"]
             st.session_state["messages"] = [
-                {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?\n• ¿Cuál es el empleado que ha generado más ingresos en ventas?\n• ¿Qué álbum tiene más canciones?\n• ¿Cuáles son las 5 canciones más caras?"}
+                {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Pokémon como:\n\n• ¿Cuáles son los 5 Pokémon más pesados?\n• ¿Qué tipo de Pokémon es el más común?\n• ¿Cuál es el Pokémon con mayor experiencia base?\n• ¿Cuáles son los Pokémon de tipo fuego?\n• ¿Qué Pokémon tiene las estadísticas de ataque más altas?\n• ¿Cuántos Pokémon tienen habilidades ocultas?"}
             ]
             st.rerun()
     
@@ -311,7 +417,7 @@ if "agent" not in st.session_state:
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
-        {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Chinook como:\n\n• ¿Qué género tiene las canciones más largas en promedio?\n• ¿Cuáles son los 5 artistas con más ventas?\n• ¿Qué país tiene más clientes?\n• ¿Cuál es el empleado que ha generado más ingresos en ventas?\n• ¿Qué álbum tiene más canciones?\n• ¿Cuáles son las 5 canciones más caras?"}
+        {"role": "assistant", "content": "Hola, soy tu agente SQL. Puedes hacerme preguntas sobre la base de datos Pokémon como:\n\n• ¿Cuáles son los 5 Pokémon más pesados?\n• ¿Qué tipo de Pokémon es el más común?\n• ¿Cuál es el Pokémon con mayor experiencia base?\n• ¿Cuáles son los Pokémon de tipo fuego?\n• ¿Qué Pokémon tiene las estadísticas de ataque más altas?\n• ¿Cuántos Pokémon tienen habilidades ocultas?"}
     ]
 
 # Display chat history
